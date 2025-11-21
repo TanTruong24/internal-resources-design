@@ -6,3 +6,4 @@ PyMuPDF
 opencv-python
 numpy
 Pillow
+python-multipart
