@@ -4,17 +4,19 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import shutil
 import uuid
+import os
 
 from sam import generate_split_images
 from gemini_extract_vertical_V import extract_vertical_V_for_folder
 
 app = FastAPI()
 
-origins = [
-    "http://localhost:3000",
-    "https://internal-resources-design-app.vercel.app",
-]
+raw_origins = os.getenv("CORS_ORIGINS", "")
+origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
+# fallback cho local nếu env chưa set
+if not origins:
+    origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
