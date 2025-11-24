@@ -30,35 +30,19 @@ def read_file_as_binary(file_path):
 def pdf_bytes_to_images(
     pdf_bytes: bytes,
     dpi: int = 200,
-    fmt: str = "png",                   # "png" or "jpg"
+    fmt: str = "png",
     save_dir: Optional[Path | str] = None,
-    base_filename: Optional[str] = None,  # used for saved filenames only
-    jpg_quality: int = 90
+    base_filename: Optional[str] = None,
+    jpg_quality: int = 90,
+    pages: Optional[List[int]] = None,     # <--- THÊM
 ) -> List[bytes]:
-    """
-    Render each page of a (scanned) PDF (given as bytes) to images and return a list of image bytes.
-    Optionally save images to disk as <base_filename>_p<page>.<ext> (1-based page numbering).
 
-    Args:
-        pdf_bytes: Raw bytes of the PDF.
-        dpi: Output DPI (controls resolution). 72 dpi == 1.0 zoom.
-        fmt: "png" (native via PyMuPDF) or "jpg".
-        save_dir: If provided, images are also saved to this directory.
-        base_filename: If saving, the basename to use (default: "document").
-        jpg_quality: JPEG quality (1–95) if fmt="jpg".
-
-    Returns:
-        List of bytes objects, one per page, in the requested format.
-    """
     fmt = fmt.lower()
     if fmt not in {"png", "jpg", "jpeg"}:
         raise ValueError("fmt must be 'png' or 'jpg'")
 
-    if fmt in {"jpg", "jpeg"} and not _HAS_PIL:
-        raise RuntimeError("JPEG output requires Pillow (pip install Pillow)")
-
-    # Prepare output directory (optional)
-    out_dir: Optional[Path] = None
+    # Prepare output directory
+    out_dir = None
     if save_dir is not None:
         out_dir = Path(save_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -68,43 +52,40 @@ def pdf_bytes_to_images(
     if not base_filename:
         base_filename = "document"
 
-    # DPI -> zoom factor
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
 
     images: List[bytes] = []
 
-    # Open from bytes
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-        if doc.needs_pass:
-            raise RuntimeError("This PDF is encrypted and needs a password.")
-        page_count = doc.page_count
+    # Normalize pages → convert 1-based -> 0-based
+    selected = None
+    if pages is not None:
+        selected = {p - 1 for p in pages}   # <---
 
-        for page_index, page in enumerate(doc, start=1):
-            # Render to pixmap (no alpha for cleaner JPG/PNG)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        for page_index, page in enumerate(doc):
+            if selected is not None and page_index not in selected:
+                continue  # Skip unwanted pages
+
             pix = page.get_pixmap(matrix=mat, alpha=False)
 
             if fmt == "png":
-                img_bytes = pix.tobytes(output="png")  # PyMuPDF-native PNG
-                ext = "png"
+                img_bytes = pix.tobytes(output="png")
             else:
-                # Convert Pixmap -> PIL Image -> JPEG bytes
-                # pix.samples are RGB bytes; pix.stride is bytes per row
                 mode = "RGB" if pix.n in (3, 4) else "L"
                 pil_img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
                 buf = io.BytesIO()
-                pil_img.save(buf, format="JPEG", quality=jpg_quality, optimize=True)
+                pil_img.save(buf, format="JPEG", quality=jpg_quality)
                 img_bytes = buf.getvalue()
-                ext = "jpg"
 
             images.append(img_bytes)
 
-            # Optional save
             if out_dir is not None:
-                filename = f"{base_filename}_p{page_index}.{ext}"
+                filename = f"{base_filename}_p{page_index+1}.{fmt}"
                 (out_dir / filename).write_bytes(img_bytes)
 
     return images
+
 
 # Bounding box type: (x_min, y_min, x_max, y_max)
 BBox = Tuple[int, int, int, int]
