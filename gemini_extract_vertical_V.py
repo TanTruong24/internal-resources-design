@@ -168,13 +168,20 @@ def make_client() -> genai.Client:
 def call_gemini_for_image(
     client: genai.Client,
     image_path: Path,
-    prompt: str = load_prompt_from_file("prompt_vertical_V.txt"),
+    prompt: str | None = None,
     model: str = DEFAULT_MODEL,
     mime_type: str = "image/png",
 ) -> str:
     """
     Gửi 1 ảnh + prompt sang Gemini, nhận về text (Markdown table).
+
+    - Nếu prompt = None -> tự load từ file prompt_vertical_V.txt.
+    - Nếu file không tồn tại / không đọc được -> RuntimeError.
     """
+    # Fallback prompt nếu FE không truyền
+    if prompt is None:
+        prompt = load_prompt_from_file("prompt_vertical_V.txt")
+
     image_bytes = image_path.read_bytes()
 
     image_part = types.Part.from_bytes(
@@ -202,6 +209,7 @@ def extract_vertical_V_for_folder(
     mime_type: str = "image/png",
     md_filename: str = "combined_vertical_V.md",
     csv_filename: str = "combined_vertical_V.csv",
+    prompt: str | None = None,
 ):
     image_dir_path = Path(image_dir)
     if not image_dir_path.is_dir():
@@ -231,7 +239,7 @@ def extract_vertical_V_for_folder(
             result_text = call_gemini_for_image(
                 client=client,
                 image_path=img,
-                prompt=load_prompt_from_file("prompt_vertical_V.txt"),
+                prompt=prompt,
                 model=model,
                 mime_type=mime_type,
             )
@@ -301,6 +309,7 @@ def _main_cli():
         out_dir=args.out_dir,
         model=args.model,
         mime_type=args.mime_type,
+        prompt=args.prompt
     )
 
 

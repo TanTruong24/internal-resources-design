@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import uuid
 import os
+import re
+from typing import List, Any, Dict
 
 from sam import generate_split_images
 from gemini_extract_vertical_V import extract_vertical_V_for_folder
@@ -25,12 +27,77 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def parse_markdown_table(md: str) -> Dict[str, Any]:
+    """
+    Trả về:
+    {
+      "headers": [...],
+      "rows": {
+        "Y1": [...],
+        "Y2": [...],
+        ...
+      }
+    }
+    """
+    import re
+
+    lines = [l.strip() for l in md.splitlines() if l.strip()]
+    table_lines = [l for l in lines if l.startswith("|") and "|" in l]
+
+    if len(table_lines) < 2:
+        raise ValueError("Không tìm thấy bảng Markdown hợp lệ.")
+
+    header_line = table_lines[0]
+    data_lines = table_lines[2:]  # skip align row
+
+    def split_row(line: str):
+        line = line.strip()
+        if line.startswith("|"):
+            line = line[1:]
+        if line.endswith("|"):
+            line = line[:-1]
+        cells = [c.strip() for c in line.split("|")]
+        # remove bold **Y1**
+        cells = [re.sub(r"^\*\*(.*)\*\*$", r"\1", c) for c in cells]
+        return cells
+
+    headers = split_row(header_line)[1:]  # bỏ cột "Axis"
+
+    row_dict: Dict[str, List[Any]] = {}
+
+    for dl in data_lines:
+        raw = split_row(dl)
+
+        row_key = raw[0]      # ví dụ "Y1"
+        raw_cells = raw[1:]   # giá trị số
+
+        converted = []
+        for c in raw_cells:
+            if c == "" or c.lower() == "null":
+                converted.append(None)
+                continue
+            try:
+                if "." in c:
+                    converted.append(float(c))
+                else:
+                    converted.append(int(c))
+            except ValueError:
+                converted.append(c)
+
+        row_dict[row_key] = converted
+
+    return {
+        "headers": headers,
+        "rows": row_dict
+    }
+
 
 @app.post("/process")
 async def process_pdf(
     background_tasks: BackgroundTasks,    # <--- THÊM
     file: UploadFile = File(...),
     pages: str = Form(...),
+    prompt: str | None = Form(None),
 ):
 
     # 1. Parse pages
@@ -42,8 +109,6 @@ async def process_pdf(
     if not page_list:
         raise HTTPException(status_code=400, detail="Phải chọn ít nhất 1 trang")
 
-    if len(page_list) > 5:
-        raise HTTPException(status_code=400, detail="Tối đa chỉ được chọn 5 trang")
 
     # 2. Tạo thư mục tạm
     session_id = str(uuid.uuid4())
@@ -76,24 +141,31 @@ async def process_pdf(
             out_dir=str(out_dir),
             md_filename="combined_vertical_V.md",
             csv_filename="combined_vertical_V.csv",
+            prompt=prompt,
         )
 
-        # 6. Lấy file output
-        csv_path = out_dir / "combined_vertical_V.csv"
-        if not csv_path.exists():
-            raise HTTPException(status_code=500, detail="Không tìm thấy file CSV kết quả")
+        md_path = out_dir / "combined_vertical_V.md"
+        if not md_path.exists():
+            raise HTTPException(status_code=500, detail="Không tìm thấy file Markdown kết quả")
 
-        # 7. Đăng ký xoá folder SAU KHI RESPONSE hoàn tất
+        md_content = md_path.read_text(encoding="utf-8")
+
+        # Parse markdown -> headers + rows
+        table_json = parse_markdown_table(md_content)
+
+        # Xoá folder sau khi trả xong
         background_tasks.add_task(shutil.rmtree, work_dir, ignore_errors=True)
 
-        # 8. Trả file cho FE
-        return FileResponse(
-            path=csv_path,
-            filename="vertical_V.csv",
-            media_type="text/csv",
-        )
+        # Trả JSON đúng format yêu cầu
+        return table_json
 
     except Exception as e:
         # Nếu lỗi, vẫn xoá folder
         shutil.rmtree(work_dir, ignore_errors=True)
+
+        # Nếu lỗi do thiếu prompt file (RuntimeError từ gemini_extract_vertical_V)
+        if isinstance(e, RuntimeError):
+            # Trả về 400 cho FE biết do thiếu cấu hình prompt
+            raise HTTPException(status_code=400, detail=str(e))
+
         raise e
